@@ -42,6 +42,8 @@ export default class Network extends EventEmitter {
     if (this.connected) throw "network already connected - disconnect first"
     
     this.ipfs.once('ready', () => this.ipfs.id((err, info) => {
+      console.log('Hi Jim!')
+
       if (err) { throw err }
       console.log('IPFS node ready with address ' + info.id)
       this.selfInfo = info
