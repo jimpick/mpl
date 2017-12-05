@@ -1,5 +1,7 @@
 import EventEmitter from 'events'
 
+import fs from 'fs'
+import mkdirp from 'mkdirp'
 import IPFS from 'ipfs'
 import Room from 'ipfs-pubsub-room'
 import Dat from 'dat-node'
@@ -27,11 +29,14 @@ export default class Network extends EventEmitter {
     })
 
     if (!process.env.DAT_DIR) {
-      console.error('DAT_DIR environment variable not set')
-      process.exit(1)
+      throw new Error('DAT_DIR environment variable not set')
+      // process.exit(1)
     }
-    Dat(process.env.DAT_DIR, (dat, err) => {
+    this.datDir = process.env.DAT_DIR
+    Dat(this.datDir, (err, dat) => {
       if (err) throw err  // What is the right way to handle errors here?
+
+      this.dat = dat
 
       dat.joinNetwork(err => {
         if (err) {
@@ -84,6 +89,20 @@ export default class Network extends EventEmitter {
       this.Peers[peer] = new Automerge.Connection(this.docSet, msg => {
         console.log('Automerge.Connection> send to ' + peer + ':', msg)
         this.room.sendTo(peer, JSON.stringify(msg))
+
+        if (this.dat) {
+          mkdirp.sync(`${this.datDir}/${peer}`)
+          fs.writeFileSync(`${this.datDir}/${peer}/lastMessage.json`, JSON.stringify(msg))
+          this.dat.importFiles()
+          /*
+          this.dat.archive.writeFile('/lastMessage.json', JSON.stringify(msg), err => {
+            if (err) {
+              console.error('writeFile error', err)
+            }
+          })
+          */
+        }
+
       })
 
       this.Peers[peer].open()
