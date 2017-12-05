@@ -2,6 +2,7 @@ import EventEmitter from 'events'
 
 import IPFS from 'ipfs'
 import Room from 'ipfs-pubsub-room'
+import Dat from 'dat-node'
 import Automerge from 'automerge'
 
 export default class Network extends EventEmitter {
@@ -25,6 +26,25 @@ export default class Network extends EventEmitter {
         ]}}
     })
 
+    if (!process.env.DAT_DIR) {
+      console.error('DAT_DIR environment variable not set')
+      process.exit(1)
+    }
+    Dat(process.env.DAT_DIR, (dat, err) => {
+      if (err) throw err  // What is the right way to handle errors here?
+
+      dat.joinNetwork(err => {
+        if (err) {
+          console.error('joinNetwork error', err)
+          throw err
+        }
+        console.log('Dat network joined')
+        const { network } = dat
+        const { connected, connecting, queued } = network
+        console.log('Dat Network:', connected, connecting, queued)
+      })
+    })
+
     this.Peers = {}
     this.peerMetadata = {}
 
@@ -42,7 +62,7 @@ export default class Network extends EventEmitter {
     if (this.connected) throw "network already connected - disconnect first"
     
     this.ipfs.once('ready', () => this.ipfs.id((err, info) => {
-      console.log('Hi Jim!')
+      console.log('Hi Jim 5!')
 
       if (err) { throw err }
       console.log('IPFS node ready with address ' + info.id)
