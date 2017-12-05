@@ -1,11 +1,14 @@
 import EventEmitter from 'events'
 
-import fs from 'fs'
-import mkdirp from 'mkdirp'
 import IPFS from 'ipfs'
 import Room from 'ipfs-pubsub-room'
 import Dat from 'dat-node'
 import Automerge from 'automerge'
+
+const hardcodedPeers = {
+  '1': '81bfdf7c33048ca93fa7fd3aed04335a5c0910010ce9cdcb579aed11d0310cee',
+  '2': '7a76619ae6e9fe39e763180f8eb009312954af5c605e839bc5db64b6f5a28b3a'
+}
 
 export default class Network extends EventEmitter {
   // TODO: reimplement 
@@ -33,7 +36,7 @@ export default class Network extends EventEmitter {
       // process.exit(1)
     }
     this.datDir = process.env.DAT_DIR
-    Dat(this.datDir, (err, dat) => {
+    Dat(this.datDir, {indexing: false}, (err, dat) => {
       if (err) throw err  // What is the right way to handle errors here?
 
       this.dat = dat
@@ -91,16 +94,14 @@ export default class Network extends EventEmitter {
         this.room.sendTo(peer, JSON.stringify(msg))
 
         if (this.dat) {
-          mkdirp.sync(`${this.datDir}/${peer}`)
-          fs.writeFileSync(`${this.datDir}/${peer}/lastMessage.json`, JSON.stringify(msg))
-          this.dat.importFiles()
-          /*
-          this.dat.archive.writeFile('/lastMessage.json', JSON.stringify(msg), err => {
+          const version = this.dat.archive.version
+          const file = `/${peer}/${version + 1}.json`
+          const json = JSON.stringify(msg, null, 2)
+          this.dat.archive.writeFile(file, json, err => {
             if (err) {
               console.error('writeFile error', err)
             }
           })
-          */
         }
 
       })
