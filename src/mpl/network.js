@@ -1,14 +1,12 @@
 import EventEmitter from 'events'
 
-import IPFS from 'ipfs'
-import Room from 'ipfs-pubsub-room'
 import Dat from 'dat-node'
 import Automerge from 'automerge'
 
-const hardcodedPeers = {
-  '1': '81bfdf7c33048ca93fa7fd3aed04335a5c0910010ce9cdcb579aed11d0310cee',
-  '2': '7a76619ae6e9fe39e763180f8eb009312954af5c605e839bc5db64b6f5a28b3a'
-}
+const hardcodedPeers = new Map([
+  [1, '81bfdf7c33048ca93fa7fd3aed04335a5c0910010ce9cdcb579aed11d0310cee'],
+  [2, '7a76619ae6e9fe39e763180f8eb009312954af5c605e839bc5db64b6f5a28b3a']
+])
 
 export default class Network extends EventEmitter {
   // TODO: reimplement 
@@ -17,29 +15,39 @@ export default class Network extends EventEmitter {
   constructor(docSet) {
     super()
 
-    const ipfs = new IPFS({
-      repo: 'ipfs/pubsub-demo/' + Math.random(),
-      EXPERIMENTAL: {
-        pubsub: true
-      },
-      config: {
-        "Addresses": {
-          "API": "",
-          "Gateway": "",
-          "Swarm": [
-            "/ip4/0.0.0.0/tcp/0",
-        ]}}
-    })
-
-    if (!process.env.DAT_DIR) {
-      throw new Error('DAT_DIR environment variable not set')
+    this.peerNumber = parseInt(process.env.PEER_NUMBER, 10)
+    if (!this.peerNumber) {
+      throw new Error('PEER_NUMBER environment variable not set')
       // process.exit(1)
     }
-    this.datDir = process.env.DAT_DIR
+    this.datDir = `node-${this.peerNumber}`
+
+    this.Peers = {}
+    this.peerMetadata = {}
+
+    this.selfInfo = null;
+    this.name = 'Unset Name'
+
+    this.docSet = docSet
+
+    this.connected = false
+  }
+
+  connect() {
+    if (this.connected) throw "network already connected - disconnect first"
+
+    // Start sharing our peer
     Dat(this.datDir, {indexing: false}, (err, dat) => {
       if (err) throw err  // What is the right way to handle errors here?
 
       this.dat = dat
+      this.datKey = this.dat.archive.key.toString('hex')
+      if (hardcodedPeers.get(this.peerNumber) !== this.datKey) {
+        throw new Error(`Key of Dat archive node-${this.peerNumber} does not matched hardcoded value`)
+      }
+      console.log(`Joined as node-${this.peerNumber}: ${this.datKey}`)
+
+      this.followOtherPeers()
 
       dat.joinNetwork(err => {
         if (err) {
@@ -52,46 +60,38 @@ export default class Network extends EventEmitter {
         console.log('Dat Network:', connected, connecting, queued)
       })
     })
-
-    this.Peers = {}
-    this.peerMetadata = {}
-
-    this.selfInfo = null;
-    this.name = 'Unset Name'
-
-    this.ipfs = ipfs
-
-    this.docSet = docSet
-
-    this.connected = false
+  
+    this.connected = true
   }
 
-  connect() {
-    if (this.connected) throw "network already connected - disconnect first"
-    
-    this.ipfs.once('ready', () => this.ipfs.id((err, info) => {
-      console.log('Hi Jim 5!')
-
-      if (err) { throw err }
-      console.log('IPFS node ready with address ' + info.id)
-      this.selfInfo = info
-    
-      this.room = Room(this.ipfs, 'ampl-experiment')
-      this.room.on('peer joined', (peer) => { this.peerJoined(peer)} )
-      this.room.on('peer left', (peer) => { this.peerLeft(peer) } )
-      this.room.on('message', (message) => { this.message(message)} )
-    }))
-
-    this.connected = true
+  followOtherPeers() {
+    // Start following other peers
+    for (const [index, datUrl] of hardcodedPeers) {
+      if (index === this.peerNumber) continue
+      console.log(`Following node-${index}: ${datUrl}`)
+      const options = {
+        key: datUrl,
+        temp: true,
+        sparse: true
+      }
+      Dat('./not-used', options, (err, dat) => {
+        dat.joinNetwork()
+        const key = dat.key.toString('hex')
+        this.peerJoined(key)
+        const historyStream = dat.archive.history()
+        historyStream.on('data', data => {
+          console.log(`History ${index}:`, data)
+        })
+      })
+    }
   }
 
   peerJoined(peer) {
     console.log('peer ' + peer + ' joined')
-    if (peer == this.selfInfo.id) { return }
+    if (peer == this.datKey) { return }
     if (!this.Peers[peer]) {
       this.Peers[peer] = new Automerge.Connection(this.docSet, msg => {
         console.log('Automerge.Connection> send to ' + peer + ':', msg)
-        this.room.sendTo(peer, JSON.stringify(msg))
 
         if (this.dat) {
           const version = this.dat.archive.version
@@ -111,11 +111,6 @@ export default class Network extends EventEmitter {
     return this.Peers[peer]
   }
 
-  peerLeft(peer) {
-    console.log('peer ' + peer + ' left')
-    delete this.Peers[peer]
-  }
-
   message(message) {
     console.log('Automerge.Connection> receive ' + message.from + ': ' + message.data.toString())
     let contents = JSON.parse(message.data.toString());
@@ -126,43 +121,22 @@ export default class Network extends EventEmitter {
     this.Peers[message.from].receiveMsg(contents)
   }
 
-  generatePeerMetadata() {
-    return { metadata: {
-      name: this.name,
-      // xxx: todo: docid
-    }}
-  }
-
   setName(name) {
     this.name = name
-  }
-
-  broadcastPeerMetadata() {
-    this.room.broadcast(JSON.stringify(this.generatePeerMetadata()))
-  }
-
-  sendPeerMetadata(peer) {
-    this.room.sendTo(peer, JSON.stringify(this.generatePeerMetadata()))
-  }
-
-  receivePeerMetadata(message, contents) {
-    console.log("Received a peer metadata update from ", message.from)
-    // TODO: input validation...
-    this.peerMetadata[message.from] = contents
   }
 
   broadcastActiveDocId(docId) {
     // todo: this.webRTCSignaler.broadcastActiveDocId(docId)
   }
 
-  getPeerDocs() {
-    // todo: return this.webRTCSignaler.getPeerDocs()
-  }
-
   disconnect() {
     if (this.connected == false) throw "network already disconnected - connect first"
     console.log("NETWORK DISCONNECT")
-    this.ipfs.stop()
+    dat.close(err => {
+      if (err) {
+        console.error('Dat close error', error)
+      }
+    })
     this.connected = false
   }
 }
