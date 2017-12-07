@@ -2,11 +2,13 @@ import EventEmitter from 'events'
 
 import Dat from 'dat-node'
 import Automerge from 'automerge'
+import PQueue from 'p-queue'
 
 const hardcodedPeers = new Map([
   [1, '81bfdf7c33048ca93fa7fd3aed04335a5c0910010ce9cdcb579aed11d0310cee'],
   [2, '7a76619ae6e9fe39e763180f8eb009312954af5c605e839bc5db64b6f5a28b3a']
 ])
+const lastWritten = new Map()
 
 export default class Network extends EventEmitter {
   // TODO: reimplement 
@@ -31,6 +33,7 @@ export default class Network extends EventEmitter {
     this.docSet = docSet
 
     this.connected = false
+    const downloadQueue = new PQueue({concurrency: 1})
   }
 
   connect() {
@@ -60,7 +63,7 @@ export default class Network extends EventEmitter {
         console.log('Dat Network:', connected, connecting, queued)
       })
     })
-  
+
     this.connected = true
   }
 
@@ -77,25 +80,46 @@ export default class Network extends EventEmitter {
       Dat('./not-used', options, (err, dat) => {
         dat.joinNetwork()
         const key = dat.key.toString('hex')
-        this.peerJoined(key)
+        this.peerJoined(index, key)
         const historyStream = dat.archive.history()
+        const regex = new RegExp(`^/${this.datKey}/(\\d+)\.json$`)
         historyStream.on('data', data => {
-          console.log(`History ${index}:`, data)
+          const {type, name, version} = data
+          if (type !== 'put') return
+          const match = name.match(regex)
+          if (match) {
+            console.log(`History node-${index} ${match[1]}`, data)
+            downloadQueue.add(this.downloadAndReceiveMessage(data))
+            this.downloadAndRecieveMessage(data)
+          }
         })
       })
     }
   }
 
-  peerJoined(peer) {
-    console.log('peer ' + peer + ' joined')
+  downloadAndReceiveMessage(data) {
+    const promise = new Promise((resolve, reject) => {
+      setTimeout(() => {
+        console.log('Jim download', data)
+        resolve()
+      }, 1000)
+    })
+    return promise
+  }
+
+  peerJoined(index, peer) {
+    console.log(`node-${index} (${peer}) joined`)
     if (peer == this.datKey) { return }
     if (!this.Peers[peer]) {
       this.Peers[peer] = new Automerge.Connection(this.docSet, msg => {
         console.log('Automerge.Connection> send to ' + peer + ':', msg)
 
         if (this.dat) {
-          const version = this.dat.archive.version
-          const file = `/${peer}/${version + 1}.json`
+          const lastVersion = lastWritten.get(index)
+          const nextVersion = lastVersion ?
+            lastVersion + 1 : this.dat.archive.version
+          lastWritten.set(index, nextVersion)
+          const file = `/${peer}/${nextVersion}.json`
           const json = JSON.stringify(msg, null, 2)
           this.dat.archive.writeFile(file, json, err => {
             if (err) {
