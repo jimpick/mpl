@@ -33,7 +33,7 @@ export default class Network extends EventEmitter {
     this.docSet = docSet
 
     this.connected = false
-    const downloadQueue = new PQueue({concurrency: 1})
+    this.downloadQueue = new PQueue({concurrency: 1})
   }
 
   connect() {
@@ -88,22 +88,71 @@ export default class Network extends EventEmitter {
           if (type !== 'put') return
           const match = name.match(regex)
           if (match) {
-            console.log(`History node-${index} ${match[1]}`, data)
-            downloadQueue.add(this.downloadAndReceiveMessage(data))
-            this.downloadAndRecieveMessage(data)
+            // console.log(`Received Message from node-${index} #${match[1]}`)
+            const genDownloadJob = (nodeNumber, messageNumber, dat, data) =>
+              () => {
+                console.log(`Message from node-${nodeNumber} #${messageNumber}:`)
+                return this.downloadAndReceiveMessage(dat, data)
+              }
+            const downloadJob = genDownloadJob(index, match[1], dat, data)
+            this.downloadQueue.add(downloadJob)
+            /*
+            this.downloadQueue.add(this.downloadAndReceiveMessage(
+              index, match[1], dat, data
+            ))
+            */
           }
         })
       })
     }
   }
 
-  downloadAndReceiveMessage(data) {
+  readDatFile(dat, version, file) {
+    // console.log('Jim readDatFile', version, file)
     const promise = new Promise((resolve, reject) => {
-      setTimeout(() => {
-        console.log('Jim download', data)
-        resolve()
-      }, 1000)
+      // Fails when retrieving a specific version. Bug?
+      // const archive = dat.archive.checkout(version)
+      const archive = dat.archive
+      archive.readFile(file, (err, content) => {
+        if (err) {
+          console.error('readDatFile error', err)
+          return reject(err)
+        }
+        if (!content) {
+          console.error('readDatFile empty content')
+          return reject(new Error('readDatFile empty content'))
+        }
+        // console.log('Jim2 readDatFile', err, content.toString())
+        resolve(content.toString())
+      })
+      // setTimeout(resolve, 20)
     })
+    return promise
+  }
+
+  downloadAndReceiveMessage(dat, data) {
+    const { version, name: file } = data
+    // const promise = Promise.resolve()
+    const promise = this.readDatFile(dat, version, file)
+      .then(content => {
+        try {
+          const message = JSON.parse(content)
+          console.log('  Message:', message)
+          const fromKey = dat.key.toString('hex')
+          if (this.Peers[fromKey]) {
+            this.Peers[fromKey].receiveMsg(message)
+          } else {
+            // Should never happen
+            console.log('JimZ')
+            throw new Error(`No peer registered for ${fromKey}`)
+          }
+        } catch (e) {
+          console.error('Exception:', e)
+        }
+      })
+      .catch(err => {
+        console.error('downloadAndReceiveMessage error', err)
+      })
     return promise
   }
 
@@ -112,13 +161,13 @@ export default class Network extends EventEmitter {
     if (peer == this.datKey) { return }
     if (!this.Peers[peer]) {
       this.Peers[peer] = new Automerge.Connection(this.docSet, msg => {
-        console.log('Automerge.Connection> send to ' + peer + ':', msg)
-
         if (this.dat) {
           const lastVersion = lastWritten.get(index)
           const nextVersion = lastVersion ?
-            lastVersion + 1 : this.dat.archive.version
+            lastVersion + 1 : this.dat.archive.version + 1
           lastWritten.set(index, nextVersion)
+          console.log(`Send to node-${index} #${nextVersion}:`, msg)
+
           const file = `/${peer}/${nextVersion}.json`
           const json = JSON.stringify(msg, null, 2)
           this.dat.archive.writeFile(file, json, err => {
