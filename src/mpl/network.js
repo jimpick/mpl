@@ -3,12 +3,14 @@ import EventEmitter from 'events'
 import Dat from 'dat-node'
 import Automerge from 'automerge'
 import PQueue from 'p-queue'
+import { throttle } from 'lodash'
 
 const hardcodedPeers = new Map([
-  [1, '81bfdf7c33048ca93fa7fd3aed04335a5c0910010ce9cdcb579aed11d0310cee'],
-  [2, '7a76619ae6e9fe39e763180f8eb009312954af5c605e839bc5db64b6f5a28b3a']
+  [1, '7e126fc4db0690b39bcb6d0f00530d4f689789a0d54387b90cf45b0f03a34810'],
+  [2, 'bc7661690802779f8ae52bea28ae81d3488f2266623c65b25f7d42eb36c6e267']
 ])
 const lastWritten = new Map()
+const lastRead = {}
 
 export default class Network extends EventEmitter {
   // TODO: reimplement 
@@ -34,6 +36,7 @@ export default class Network extends EventEmitter {
 
     this.connected = false
     this.downloadQueue = new PQueue({concurrency: 1})
+    this.backupLastRead = throttle(this.backupLastReadUnthrottled, 15000)
   }
 
   connect() {
@@ -50,8 +53,6 @@ export default class Network extends EventEmitter {
       }
       console.log(`Joined as node-${this.peerNumber}: ${this.datKey}`)
 
-      this.followOtherPeers()
-
       dat.joinNetwork(err => {
         if (err) {
           console.error('joinNetwork error', err)
@@ -61,10 +62,34 @@ export default class Network extends EventEmitter {
         const { network } = dat
         const { connected, connecting, queued } = network
         console.log('Dat Network:', connected, connecting, queued)
+
       })
+      this.loadLastReadJson(err => {
+        if (err) {
+          console.error('Error loading lastRead.json, continuing...', err)
+        } else {
+          console.log('lastRead:', lastRead)
+        }
+        this.followOtherPeers()
+      })
+
     })
 
     this.connected = true
+  }
+
+  loadLastReadJson(cb) {
+    this.dat.archive.readFile('/lastRead.json', (err, data) => {
+      if (err) return cb(err)
+      try {
+        const json = JSON.parse(data)
+        Object.assign(lastRead, json)
+        cb()
+      } catch (e) {
+        console.error('Exception', e)
+        cb(e)
+      }
+    })
   }
 
   followOtherPeers() {
@@ -88,6 +113,7 @@ export default class Network extends EventEmitter {
           if (type !== 'put') return
           const match = name.match(regex)
           if (match) {
+            if (lastRead[key] && version < lastRead[key]) return
             // console.log(`Received Message from node-${index} #${match[1]}`)
             const genDownloadJob = (nodeNumber, messageNumber, dat, data) =>
               () => {
@@ -141,9 +167,10 @@ export default class Network extends EventEmitter {
           const fromKey = dat.key.toString('hex')
           if (this.Peers[fromKey]) {
             this.Peers[fromKey].receiveMsg(message)
+            lastRead[fromKey] = version
+            this.backupLastRead()
           } else {
             // Should never happen
-            console.log('JimZ')
             throw new Error(`No peer registered for ${fromKey}`)
           }
         } catch (e) {
@@ -184,14 +211,14 @@ export default class Network extends EventEmitter {
     return this.Peers[peer]
   }
 
-  message(message) {
-    console.log('Automerge.Connection> receive ' + message.from + ': ' + message.data.toString())
-    let contents = JSON.parse(message.data.toString());
-    if (contents.metadata) {
-      this.receivePeerMetadata()
-    }
-    // we'll send this message to automerge too, just in case there are clocks or deltas included with it
-    this.Peers[message.from].receiveMsg(contents)
+  backupLastReadUnthrottled() {
+    console.log('Backup last read to Dat archive', Date.now())
+    const json = JSON.stringify(lastRead, null, 2)
+    this.dat.archive.writeFile('lastRead.json', json, err => {
+      if (err) {
+        console.error('Error writing lastRead.json to Dat archive')
+      }
+    })
   }
 
   setName(name) {
